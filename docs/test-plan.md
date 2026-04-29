@@ -77,8 +77,15 @@ Each row maps to a checkbox in spec §4. Test IDs are `AT-<story>.<criterion>`.
 | AT-1.8 | — | parse `gants hockey 11", new, 10km, $50-100, listed in 1 week` | all 5 filters set; keyword=`gants hockey` (size+condition+price+distance+recency tokens stripped) | unit test |
 | AT-1.9 | — | parse comma-less variant `gants hockey 11" new 10km $50-100 listed in 1 week` | same parse as AT-1.8 (filters separable by spaces or commas, per §4.1) | unit test |
 | AT-1.10 | — | parse query containing tokens that look filter-shaped but don't fit any pattern (e.g. `7-11 set`) | tokens left in keyword string, NOT consumed as filters | unit test (adversarial) |
-| AT-1.11 | tty | run with ambiguous query (e.g. `11` could be size or keyword digit) | tool prints parsed filter set + `(y/N)` prompt and waits for stdin | integration test using pexpect or `--assume-yes`-disabled flag |
-| AT-1.12 | tty | answer `n` to AT-1.11 | tool exits without searching, exit code != 0 | integration test |
+| AT-1.11a | tty | run query with two distance tokens: `gants hockey 11" 10km within 5 km` (Trigger 1: duplicate filter type, per spec §8.2) | tool prints parsed filter set with the **first** match (10km), `(y/N)` prompt, waits on stdin | integration test using pexpect |
+| AT-1.11b | tty | run query with token-class collision: `new york yankees jersey XL` (Trigger 2: `new` matched condition but flanked by alpha keywords) | tool prompts; `new` flagged in echo as ambiguous | integration test |
+| AT-1.11c | tty | run query with single-letter alpha-size flanked by alpha tokens: `vintage S sport gear` (Trigger 2: `S` between alpha tokens, no `size`/`taille`/`:`/`,` cue) | tool prompts | integration test |
+| AT-1.11d | tty | run query with bare-integer collision: `iphone 11 mint condition` (Trigger 3: bare `11`, no `size`/`taille`/`sz`/inch cue) | tool prompts | integration test |
+| AT-1.11e | tty | run UNAMBIGUOUS query: `gants hockey size 11" new 10km $50-100 listed in 1 week` (no triggers fire — bare digit is preceded by `size` AND followed by `"`) | tool runs without prompting | integration test |
+| AT-1.11f | tty | run UNAMBIGUOUS query with single-letter alpha bounded by `size` cue: `chandail size S` (S is preceded by `size` cue, Trigger 2 does not fire) | tool runs without prompting | integration test |
+| AT-1.11g | tty | answer `n` to any AT-1.11a–d prompt | tool exits without searching, exit code != 0 | integration test |
+| AT-1.11h | piped stdin OR `-y` flag | run AT-1.11a query with `--assume-yes` | tool skips prompt and runs with first-match interpretation; the chosen interpretation is echoed to stdout (auditable, per spec §8.2 escape hatch) | integration test |
+| AT-1.11i | tty, ambiguous query, user answers `y` | run AT-1.11a query, type `y\n` | tool proceeds with first-match parse (echo matches what was confirmed) | integration test |
 
 ### Story 2 — Run the search (spec §4.2)
 
@@ -115,6 +122,7 @@ just lock down the surrounding contract.
 | AT-4.3 | as AT-4.1 | default CLI output | only the 2 passing listings printed, in `position` order | integration test capturing stdout |
 | AT-4.4 | as AT-4.1 | run with `--show-rejects` | all 10 listings printed; rejects annotated with their failure reasons | integration test |
 | AT-4.5 | see §2 of this plan | size substring boundary cases | dedicated wedge tests |
+| AT-4.6 | listing.distance_km=4.7 | render to CLI | distance shown in km (e.g. `4.7 km` or `4.7km`); no miles, no mixed-unit (per spec §8.1 ruling 2) | integration test capturing stdout |
 
 ### Story 5 — Re-run and diff (spec §4.5)
 
@@ -123,8 +131,10 @@ just lock down the surrounding contract.
 | AT-5.1 | run query Q yielding listings {A,B,C}; later run Q yielding {A,B,D} | diff | A,B → STILL_THERE; C → GONE; D → NEW | integration test |
 | AT-5.2 | A had price 80, now 70 | diff | A → PRICE_CHANGED with old=80, new=70 | integration test |
 | AT-5.3 | as AT-5.1 with `--only new` | run | only D printed | integration test |
+| AT-5.3b | first-ever run for this `parsed_filters_hash`, with `--only new` (per spec §8.1 ruling 5) | run | every passing listing printed AND a one-line note `first run for these filters; nothing to diff against yet.` is emitted; tool does NOT bucket all results as `NEW`; tool does NOT error | integration test |
 | AT-5.4 | C failed validation in run 1, would still appear from Marketplace in run 2 but again fails | diff | C is **not** in any bucket — diff only considers `validated_pass=true` listings (per spec §4.5 last bullet) | integration test (regression guard against accidental "GONE" on filter-rejected items) |
 | AT-5.5 | run query Q' (different parsed filters from Q) | diff | diff falls back to "no prior run" — does NOT diff Q' against Q | integration test (regression: filter-key changes must not be cross-matched) |
+| AT-5.6 | run query Q at time T1 (validator A is buggy and passes a size-110 listing); developer fixes validator; re-run Q at T2 (per spec §8.1 ruling 1: every run revalidates from scratch, never trusts prior `validated_pass`) | second run | the size-110 listing now has `validated_pass=false` in the run-T2 `search_results` row, even though the same `marketplace_id` had `validated_pass=true` at T1; the diff bucketing for this listing follows AT-5.4 (excluded) | integration test |
 
 ---
 
@@ -207,12 +217,20 @@ One test row per filter, plus adversarial cases. All unit tests unless noted.
 |---|---|---|---|---|
 | RECENT-1 | filter recency_days=7, frozen now=2026-04-29 | listing listed_at=2026-04-22 | pass | inclusive |
 | RECENT-2 | as above | listed_at=2026-04-21 | fail | 8 days |
-| RECENT-3 | as above | listed_at="just listed" | pass | maps to 0 days per spec |
-| RECENT-4 | as above | listed_at="3 hours ago" | pass | sub-day → 0 |
+| RECENT-3 | as above | listed_at="just listed" | pass | maps to 0 days per spec §8.2 |
+| RECENT-4 | as above | listed_at="3 hours ago" | pass | sub-day → 0 (spec §8.2) |
+| RECENT-4b | as above | listed_at="X minutes ago" | pass | sub-day → 0 (spec §8.2) |
 | RECENT-5 | as above | listed_at=NULL | **fail with `no_listed_at`** | spec §3 explicit |
-| RECENT-6 | filter recency_days=0 (`today`) | listed_at="yesterday" | fail | strict |
+| RECENT-5b | as above | listed_at="around a fortnight" (a string not on §8.2's allow-list) | **fail with `no_listed_at`** | spec §8.2: anything not on the mapping list → NULL → fails |
+| RECENT-6 | filter recency_days=0 (`today`) | listed_at="yesterday" | fail | strict; "yesterday" is day-grain, literal 1 day |
 | RECENT-7 | filter recency_days=1 (`past 24h`) | listed_at="23 hours ago" | pass | sub-day boundary |
-| RECENT-8 | adversarial: Marketplace says "listed a week ago" (string) | recency_days=7 | pass (boundary — must match spec's coarse-rounding allowance) | Note: spec §5 sets recency target at 95% **because** of Marketplace's coarse rounding; this test documents the lenient interpretation. Confirm with PM if "a week" should round to 7 or to 8. **OPEN.** |
+| RECENT-8 | filter recency_days=7 | listing listed_at="a week ago" | **pass** | spec §8.2 RULING: `a week ago` → 7 days exactly (lenient). Resolved (no longer OPEN). |
+| RECENT-8b | as above | listed_at="1 week ago" | pass | spec §8.2: same mapping as `a week ago` |
+| RECENT-8c | as above | listed_at="last week" | pass | spec §8.2: same mapping as `a week ago` |
+| RECENT-8d | filter recency_days=14 | listed_at="2 weeks ago" | pass | spec §8.2: plural weeks round to n×7 days = 14 |
+| RECENT-8e | filter recency_days=13 | listed_at="2 weeks ago" | fail | n×7 = 14 > 13 |
+| RECENT-8f | filter recency_days=7 | listed_at="3 days ago" | pass | day-grain literal (spec §8.2) |
+| RECENT-8g | filter recency_days=7 | listed_at="8 days ago" | fail | day-grain literal exceeds filter |
 
 ### 3.4 Condition
 
@@ -398,31 +416,42 @@ The QA report (`docs/qa-report-v1.md`) ends with a one-line verdict:
 
 ---
 
-## 10. Open questions raised by this plan
+## 10. Open questions raised by this plan — all resolved
 
-### Resolved
+All five questions raised in this plan are resolved by the spec §8 addendum
+(commit c2126ed) and architecture.md §7. Summary for traceability:
 
-1. **PRICE-10 currency mismatch.** RESOLVED — architecture.md §7.6. Listing
-   in non-CAD currency fails with `[{"filter":"price","reason":"currency_mismatch"}]`;
-   no FX conversion in v1. Test row updated.
-2. **DIFF-7 within-run duplicates.** RESOLVED — architecture.md §7.7.
-   `INSERT OR IGNORE` on `PRIMARY KEY (search_id, listing_id)`; first-seen
-   position retained; drop count logged once per run as
-   `dedup: dropped N within-run duplicate listings`. Test row updated.
-3. **RATE-1 re-run politeness.** RESOLVED — architecture.md §5 Layer 4 + §7.7/§7.8.
-   Default 5-min minimum interval per `parsed_filters_hash`, configurable via
-   `--min-interval <seconds>`, bypass via `--force`. RATE-1 expanded into
-   four rows (block / bypass / interval-expired / different-query) and
-   unblocked.
+1. **PRICE-10 currency mismatch.** Resolved — spec §8.1 ruling 3/8 +
+   architecture.md §7.6. Non-CAD listing fails price filter with reason
+   `currency_mismatch`; no FX conversion. Test row updated.
+2. **DIFF-7 within-run duplicates.** Resolved — spec §8.1 ruling 6 +
+   architecture.md §7.7. `INSERT OR IGNORE` on the `(search_id, listing_id)`
+   PK; first-seen position retained; per-run log line
+   `dedup: dropped N within-run duplicate listings`.
+3. **RATE-1 re-run politeness.** Resolved — spec §8.1 ruling 7 +
+   architecture.md §5 Layer 4 / §7.7 / §7.8. 5-min default per
+   `parsed_filters_hash`; `--min-interval`, `--force`. Expanded to four rows
+   (a/b/c/d).
+4. **RECENT-8 "a week ago" rounding.** Resolved — spec §8.2. `a week ago` /
+   `1 week ago` / `last week` → 7 days exactly (PASS for `recency_days=7`).
+   Plural weeks → n×7. Day-grain literal. Sub-day → 0. Anything else → NULL →
+   `no_listed_at`. RECENT-8 expanded into RECENT-8a–g.
+5. **AT-1.11 ambiguity prompt.** Resolved — spec §8.2. Three concrete
+   triggers: (1) duplicate filter type, (2) token-class collision (e.g. `new`
+   in `new york`, single-letter alpha-size flanked by alpha tokens with no
+   `size`/`taille`/`:`/`,` cue), (3) bare-integer collision (bare integer
+   without leading `size`/`taille`/`sz` cue or trailing `"`/`inch`/`in.`).
+   Escape hatch: `--assume-yes` / `-y`. Expanded to AT-1.11a–i.
 
-### Still open (PM)
+Two side-effect rulings from architect (spec §8.1) added to the plan as
+new test rows:
 
-4. **RECENT-8 "a week ago" rounding.** Spec §5 admits recency is coarse and
-   sets a 95% target. Should "a week ago" string map to exactly 7 days
-   (passes a 7-day filter) or 8 days (fails)? Suggest 7 (lenient = matches
-   user's mental model). PM call.
-5. **AT-1.11 ambiguity prompt.** Spec §4.1 says "If parsing is ambiguous, ...
-   asks for confirmation" but doesn't define what counts as ambiguous. Suggest:
-   any token that could be parsed as a filter OR keyword (e.g. bare digits
-   without an inch mark, or alpha tokens that match a known size letter when
-   the surrounding context could read as keyword). PM call.
+- **§8.1 ruling 1 (every-run revalidation).** New row AT-5.6 confirms a
+  validator bugfix takes effect on next run, even for listings whose
+  `validated_pass` was previously `true`.
+- **§8.1 ruling 2 (km display unit).** New row AT-4.6 asserts CLI distance
+  rendering is always km, no miles, no mixed-unit.
+- **§8.1 ruling 5 (`--only new` first run).** New row AT-5.3b asserts
+  first-ever run prints all passing results plus the
+  `first run for these filters...` note, does NOT bucket as NEW, does NOT
+  error.
