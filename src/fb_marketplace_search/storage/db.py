@@ -69,7 +69,11 @@ def init_db(conn: sqlite3.Connection) -> None:
             return
         raise SchemaMismatch(
             f"on-disk schema_version={existing}, code expects {SCHEMA_VERSION}. "
-            "Rerun with FB_MARKETPLACE_DROP_ON_MIGRATE=1 to recreate (this deletes your cache)."
+            "Schema bumped to add per-search price snapshot columns "
+            "(price_at_search, currency_at_search) so the PRICE_CHANGED diff "
+            "bucket reflects the prior run's price instead of the current "
+            "post-UPSERT one. Rerun with FB_MARKETPLACE_DROP_ON_MIGRATE=1 to "
+            "recreate (this deletes your cache; per the v1 blow-away policy)."
         )
 
     # Schema is current. Still run CREATE IF NOT EXISTS to repair missing
