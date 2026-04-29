@@ -100,3 +100,52 @@ Round 2 fires when developer marks tasks #6/#7/#8/#9/#10 completed. Per test-pla
 | #10 (RECENT-8c) | RECENT-1..8g | full recency parser + validator |
 
 If round 2 is green, I'll then run the §7 manual spot-check protocol against live Marketplace, write a round 3 report, and update verdict to SHIP / HOLD / REDESIGN.
+
+---
+
+# Round 2
+
+Run date: 2026-04-29
+Build: commit c6cc0a9 ("fix: spec §8.2 ambiguity triggers + RECENT mappings + AT-5.2 price snapshot")
+Schema: bumped v1 → v2 (`price_at_search`, `currency_at_search` columns on `search_results`); blow-away migration policy applies (`FB_MARKETPLACE_DROP_ON_MIGRATE=1` for existing caches).
+
+## 1. Verdict (round 2)
+
+**SHIP — pending the §7 spot-check.** All five round-1 bugs verified fixed. The wedge gate remains green. The automated suite is necessary-but-not-sufficient per spec §5; final SHIP/HOLD on the build belongs to product-manager after the spot-check protocol runs.
+
+Per test-plan §9: every WEDGE-* passes (size precision/recall = 1.0 by automated fixture), every AT-* in stories 1-5 passes, no open blocker bugs. The non-functional metrics are still soft targets and not gating.
+
+## 2. Test counts
+
+| Bucket | Round 1 | Round 2 | Notes |
+|---|---|---|---|
+| Developer's pytest suite (`pytest`) | 114/114 | **140/140** | +24 since round 1 (ambiguity-trigger, recency §8.2, render-units, revalidate-every-run, AT-5.2 snapshot) |
+| Smoke (`pytest -m smoke`) | not run | not run | gated on §7 manual protocol |
+| Manual offline acceptance probes | 14/19 | **13/13** | round-2 probes scoped to round-1 failures + architect's precedence assertion |
+
+## 3. Bug verification (round-2)
+
+| # | Test ID | Round 1 | Round 2 | Evidence |
+|---|---|---|---|---|
+| 6 | AT-5.2 | FAIL — PRICE_CHANGED empty | **PASS** — A2 in PRICE_CHANGED, NOT in STILL_THERE (precedence respected per architect) | direct probe of compute_diff with new schema |
+| 7 | AT-1.11a | FAIL — duplicate not flagged | **PASS** | `parse('… 10km within 5 km')` sets ambiguities |
+| 8 | AT-1.11b | FAIL — `new york` silent | **PASS** | `parse('new york yankees jersey XL')` sets ambiguities |
+| 9 | AT-1.11c | FAIL — `S` flanked silent | **PASS** | `parse('vintage S sport gear')` sets ambiguities |
+| 10 | RECENT-8c | FAIL — `last week` → None | **PASS** | maps to now-7d; sibling cases unchanged |
+
+Architect's precedence assertion (PRICE_CHANGED listing must NOT also appear in STILL_THERE): **PASS**. `STILL_THERE=['A1']` only; A2 went to PRICE_CHANGED, A3 to GONE, D1 to NEW.
+
+## 4. Test-plan / spec drift adjustments
+
+The fix for bug #10 surfaced a clarification on §8.2's strict allow-list: bare `yesterday` is NOT on the spec's mapping list (the day-grain form is `X days ago`). Developer's RECENT mapping correctly routes `yesterday` to NULL → `no_listed_at`. My round-1 test-plan row RECENT-6 had encoded `yesterday → 1 day`, which is a test-plan bug, not a product bug. Updated docs/test-plan.md:
+- RECENT-6 changed to use `1 day ago` (proper day-grain form).
+- RECENT-6b added asserting `yesterday` → fails with `no_listed_at` per §8.2 strict reading.
+
+No spec change needed — §8.2 is unambiguous on this point ("Anything not on this list → `listed_at = NULL`").
+
+## 5. What's still pending
+
+- **§7 manual spot-check protocol.** Required before final SHIP per test-plan §9 and spec §5. Produces the per-filter accuracy CSV. Will run that and post results to product-manager for the release call.
+- **Smoke suite (`pytest -m smoke`)** against a logged-in session. PM has indicated this is also a precondition for ship (covers RATE-1b `--force` bypass through the live driver path, and the §7 spot-check effectively pulls live data anyway).
+
+If the §7 spot-check returns size accuracy 100% and price/distance/recency/condition meet their targets in spec §5, the verdict becomes SHIP and PM owns the release call.

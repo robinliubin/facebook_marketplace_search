@@ -222,7 +222,8 @@ One test row per filter, plus adversarial cases. All unit tests unless noted.
 | RECENT-4b | as above | listed_at="X minutes ago" | pass | sub-day → 0 (spec §8.2) |
 | RECENT-5 | as above | listed_at=NULL | **fail with `no_listed_at`** | spec §3 explicit |
 | RECENT-5b | as above | listed_at="around a fortnight" (a string not on §8.2's allow-list) | **fail with `no_listed_at`** | spec §8.2: anything not on the mapping list → NULL → fails |
-| RECENT-6 | filter recency_days=0 (`today`) | listed_at="yesterday" | fail | strict; "yesterday" is day-grain, literal 1 day |
+| RECENT-6 | filter recency_days=0 (`today`) | listed_at="1 day ago" | fail | strict; day-grain literal is 1 day per §8.2 |
+| RECENT-6b | filter recency_days=7 | listed_at="yesterday" | **fail with `no_listed_at`** | spec §8.2 strict allow-list: `yesterday` is NOT mapped (day-grain form is `X days ago`); routes to NULL → fails recency |
 | RECENT-7 | filter recency_days=1 (`past 24h`) | listed_at="23 hours ago" | pass | sub-day boundary |
 | RECENT-8 | filter recency_days=7 | listing listed_at="a week ago" | **pass** | spec §8.2 RULING: `a week ago` → 7 days exactly (lenient). Resolved (no longer OPEN). |
 | RECENT-8b | as above | listed_at="1 week ago" | pass | spec §8.2: same mapping as `a week ago` |
