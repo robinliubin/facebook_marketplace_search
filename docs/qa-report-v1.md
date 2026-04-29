@@ -119,7 +119,7 @@ Per test-plan §9: every WEDGE-* passes (size precision/recall = 1.0 by automate
 
 | Bucket | Round 1 | Round 2 | Notes |
 |---|---|---|---|
-| Developer's pytest suite (`pytest`) | 114/114 | **140/140** | +24 since round 1 (ambiguity-trigger, recency §8.2, render-units, revalidate-every-run, AT-5.2 snapshot) |
+| Developer's pytest suite (`pytest`) | 114/114 | **145/145** | +24 in c6cc0a9 (ambiguity-trigger, recency §8.2, render-units, revalidate-every-run, AT-5.2 snapshot); +5 in ea0837d (RATE-1a/c/d deterministic via factored-out `check_politeness_gate` helper, plus `--force` bypass and no-prior-search rows) |
 | Smoke (`pytest -m smoke`) | not run | not run | gated on §7 manual protocol |
 | Manual offline acceptance probes | 14/19 | **13/13** | round-2 probes scoped to round-1 failures + architect's precedence assertion |
 
@@ -146,6 +146,6 @@ No spec change needed — §8.2 is unambiguous on this point ("Anything not on t
 ## 5. What's still pending
 
 - **§7 manual spot-check protocol.** Required before final SHIP per test-plan §9 and spec §5. Produces the per-filter accuracy CSV. Will run that and post results to product-manager for the release call.
-- **Smoke suite (`pytest -m smoke`)** against a logged-in session. PM has indicated this is also a precondition for ship (covers RATE-1b `--force` bypass through the live driver path, and the §7 spot-check effectively pulls live data anyway).
+- **Smoke suite (`pytest -m smoke`)** against a logged-in session. PM has indicated this is also a precondition for ship. Note: with ea0837d, RATE-1a/c/d and the `--force` gate logic are now deterministic-test-covered offline; only RATE-1b's *full harvest path* (gate bypass plus a real search) still needs smoke.
 
 If the §7 spot-check returns size accuracy 100% and price/distance/recency/condition meet their targets in spec §5, the verdict becomes SHIP and PM owns the release call.
