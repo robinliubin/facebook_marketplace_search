@@ -1,1 +1,36 @@
 .claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# uv
+uv.lock
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Project-local state (browser session, sqlite cache, captured failure HTML)
+.fb_marketplace_search/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+last_failure.html
+
+# Captured raw fixtures pre-PII-scrub stay local; only scrubbed ones get committed
+tests/fixtures/_raw/
