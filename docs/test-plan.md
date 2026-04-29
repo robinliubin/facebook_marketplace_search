@@ -189,7 +189,7 @@ One test row per filter, plus adversarial cases. All unit tests unless noted.
 | PRICE-7 | filter `under 100` (min=0,max=100) | price=0 (free) | pass | zero is valid |
 | PRICE-8 | filter `over 50` (min=50, max=None) | price=10000 | pass | open upper bound |
 | PRICE-9 | adversarial: price in description, not structured field | structured price=NULL, description="$80 firm" | **fail with `no_price`** | spec §3: structured price is source of truth; v1 does NOT parse description for price |
-| PRICE-10 | currency mismatch (listing in USD) | price=80 USD, filter is CAD 50-100 | fail with `currency_mismatch` (or pass if architect declares CAD-only-marketplace assumption — flag as open question to architect) | **OPEN — needs architect ruling** |
+| PRICE-10 | currency mismatch (listing in USD) | price=80 USD, filter is CAD 50-100 | fail with `validation_failures_json` entry `[{"filter":"price","reason":"currency_mismatch"}]`; v1 does NOT do FX conversion | architect ruling, architecture.md §7.6 |
 
 ### 3.2 Distance
 
@@ -245,7 +245,7 @@ One test row per filter, plus adversarial cases. All unit tests unless noted.
 | DIFF-4 | A: listing 1 @ $80, B: listing 1 @ $80 | diff B vs A | STILL_THERE, NOT PRICE_CHANGED |
 | DIFF-5 | listing 1 in A passed validation; in B same listing returned by Marketplace but now fails (e.g. user added stricter filter) | diff B vs A | listing 1 NOT in any bucket (per AT-5.4) |
 | DIFF-6 | run with no prior runs of this exact parsed filter | diff | tool prints "no prior run to diff against" and outputs validated results unfiltered (not all-NEW or all-GONE) |
-| DIFF-7 | DEDUP within a single run: Marketplace returned the same `marketplace_id` twice on different pages | harvest+persist | listings table has 1 row, search_results has 1 row (or multiple with distinct positions, per architect's call — flag if ambiguous) | **OPEN — needs architect ruling on within-run duplicates** |
+| DIFF-7 | DEDUP within a single run: Marketplace returned the same `marketplace_id` twice on different pages (positions 3 and 27, say) | harvest+persist | `listings` = 1 row; `search_results` = 1 row keyed at the **earlier** position (3, not 27) — `INSERT OR IGNORE` semantics on `PRIMARY KEY (search_id, listing_id)`, NOT `OR REPLACE`; stderr/log line `dedup: dropped N within-run duplicate listings` reports the drop count | architect ruling, architecture.md §7.7 |
 
 ---
 
@@ -259,7 +259,10 @@ not auto-block ship.
 | PERF-1 | Time-to-results | smoke test: time from CLI invocation to printed list, default `--pages 3` | median < 60s (spec §5 secondary metric) |
 | PERF-2 | Validator latency | unit benchmark: validate 1000 listings | < 1s on dev laptop (size validator is regex-only; should be trivial) |
 | PERF-3 | DB write latency | integration test: insert 1000 listings | < 5s |
-| RATE-1 | Re-run politeness | smoke: invoke same query twice within 30s | tool refuses or warns (spec §6 open Q7 — flag for architect; test is a placeholder until decided) | **BLOCKED on architect** |
+| RATE-1a | Re-run politeness — block path | smoke: run query, immediately re-run within 30s without `--force` | tool exits non-zero with message `Last run was N seconds ago; minimum interval is M. Use --force to override.`; no new search executed | architect ruling, architecture.md §5 Layer 4 + §7.7 / §7.8 |
+| RATE-1b | Re-run politeness — bypass path | as above, then re-run with `--force` | tool proceeds, search executes, new `searches` row written | same |
+| RATE-1c | Re-run politeness — interval expired | sleep past `--min-interval` (use a low override e.g. `--min-interval 2` and wait 3s), re-run same query | tool proceeds without `--force` | same |
+| RATE-1d | Re-run politeness — different query | run query A, immediately run query B (different `parsed_filters_hash`) | tool proceeds; rate limit is per-hash, not global | same |
 | AUTH-1 | Login session expiry | smoke: invalidate stored session, run | tool exits with a clear "please re-login" message and a re-login command, NOT a stack trace | spec §6 open Q1 (b) implication |
 
 ---
@@ -289,8 +292,9 @@ a real Marketplace browser session, scrubbing PII):
 - `fixtures/listing_detail_no_distance.html` — adversarial.
 - `fixtures/listing_detail_no_listed_at.html` — adversarial.
 - `fixtures/listing_detail_no_condition.html` — adversarial.
-- `fixtures/listing_detail_currency_usd.html` — adversarial for PRICE-10
-  (gated on architect ruling).
+- `fixtures/listing_detail_currency_usd.html` — adversarial for PRICE-10:
+  structured price field present but currency is `USD`, not `CAD` (or any
+  non-CAD code). Used to verify the `currency_mismatch` reason path.
 - `fixtures/parsed_filters/*.json` — golden parser outputs for AT-1.* table-driven
   tests.
 
@@ -394,25 +398,31 @@ The QA report (`docs/qa-report-v1.md`) ends with a one-line verdict:
 
 ---
 
-## 10. Open questions for product-manager / architect (raised by this plan)
+## 10. Open questions raised by this plan
 
-These were uncovered while writing tests and need answers before #5 runs:
+### Resolved
 
-1. **PRICE-10 currency mismatch.** Spec §3 says price filter is "(CAD)" but
-   doesn't say what to do if Marketplace returns a non-CAD listing. Suggest
-   "drop with reason `currency_mismatch`". Needs architect ruling.
-2. **RECENT-8 "a week ago" rounding.** Spec §5 admits recency is coarse and
+1. **PRICE-10 currency mismatch.** RESOLVED — architecture.md §7.6. Listing
+   in non-CAD currency fails with `[{"filter":"price","reason":"currency_mismatch"}]`;
+   no FX conversion in v1. Test row updated.
+2. **DIFF-7 within-run duplicates.** RESOLVED — architecture.md §7.7.
+   `INSERT OR IGNORE` on `PRIMARY KEY (search_id, listing_id)`; first-seen
+   position retained; drop count logged once per run as
+   `dedup: dropped N within-run duplicate listings`. Test row updated.
+3. **RATE-1 re-run politeness.** RESOLVED — architecture.md §5 Layer 4 + §7.7/§7.8.
+   Default 5-min minimum interval per `parsed_filters_hash`, configurable via
+   `--min-interval <seconds>`, bypass via `--force`. RATE-1 expanded into
+   four rows (block / bypass / interval-expired / different-query) and
+   unblocked.
+
+### Still open (PM)
+
+4. **RECENT-8 "a week ago" rounding.** Spec §5 admits recency is coarse and
    sets a 95% target. Should "a week ago" string map to exactly 7 days
    (passes a 7-day filter) or 8 days (fails)? Suggest 7 (lenient = matches
    user's mental model). PM call.
-3. **DIFF-7 within-run duplicates.** Marketplace can return the same listing
-   on two pages within one harvest. Should `search_results` get one row or
-   two? Architect call.
-4. **RATE-1 re-run politeness.** Spec §6 Q7 is open. Until decided, RATE-1 is
-   marked BLOCKED on architect.
 5. **AT-1.11 ambiguity prompt.** Spec §4.1 says "If parsing is ambiguous, ...
    asks for confirmation" but doesn't define what counts as ambiguous. Suggest:
    any token that could be parsed as a filter OR keyword (e.g. bare digits
    without an inch mark, or alpha tokens that match a known size letter when
-   the surrounding context could read as keyword). Needs PM clarification or
-   architect taxonomy.
+   the surrounding context could read as keyword). PM call.
