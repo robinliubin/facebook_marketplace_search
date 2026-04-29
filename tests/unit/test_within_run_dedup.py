@@ -61,8 +61,8 @@ def test_within_run_duplicate_listing_keeps_first_position(db):
         total_passed=2,
     )
     rows = [
-        ("L1", 0, True, []),
-        ("L1", 5, True, []),  # duplicate
+        ("L1", 0, True, [], None, None),
+        ("L1", 5, True, [], None, None),  # duplicate
     ]
     dropped = record_search_results(db, search_id=sid, rows=rows)
     db.commit()
@@ -90,7 +90,7 @@ def test_no_duplicates_returns_zero_dropped(db):
     dropped = record_search_results(
         db,
         search_id=sid,
-        rows=[("A", 0, True, []), ("B", 1, True, [])],
+        rows=[("A", 0, True, [], None, None), ("B", 1, True, [], None, None)],
     )
     db.commit()
     assert dropped == 0
@@ -108,8 +108,8 @@ def test_failure_payload_preserved_on_first_row(db):
         total_passed=0,
     )
     rows = [
-        ("L1", 0, False, [ValidationFailure(filter="size", reason="r1")]),
-        ("L1", 5, True, []),
+        ("L1", 0, False, [ValidationFailure(filter="size", reason="r1")], None, None),
+        ("L1", 5, True, [], None, None),
     ]
     dropped = record_search_results(db, search_id=sid, rows=rows)
     db.commit()

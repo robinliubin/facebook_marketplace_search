@@ -42,7 +42,9 @@ def _run_pipeline(conn, html: str, query: ParsedQuery, query_text: str = "test")
         ok, failures = validate_all(listing, query, now=NOW)
         if ok:
             passed_count += 1
-        rows.append((listing.marketplace_id, listing.position, ok, failures))
+        rows.append(
+            (listing.marketplace_id, listing.position, ok, failures, listing.price, listing.currency)
+        )
     sid = record_search(
         conn,
         query_text=query_text,

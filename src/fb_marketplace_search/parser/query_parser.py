@@ -7,11 +7,25 @@ consuming the matched span (replacing with whitespace so positions of
 later-tried patterns are preserved). What remains, with whitespace
 collapsed, becomes the keyword string.
 
-Ambiguity (per architect §7.4): two filters of the same type, OR a
-size/condition token that *could* also be a keyword. The default ruling
-in §7.4 is: when in doubt, prompt — so we surface ambiguity rather than
-silently picking. This module returns ambiguity flags; the CLI decides
-whether to prompt.
+Ambiguity per spec §8.2 — three concrete triggers:
+
+  1. Duplicate filter type: two or more tokens parsed into the same filter
+     type (e.g. `10km within 5 km`, two prices). Pick the first-by-position
+     match for the parsed-filter set; flag ambiguity.
+  2. Token-class collision: a token matched a filter regex but its
+     surrounding context is also plausibly keyword. Heuristic: a single-
+     letter alpha-size token (S, M, L) flanked on both sides by
+     alphabetical tokens — and not preceded by `size` / `taille` / `:` /
+     `,` / string boundary — is ambiguous. The `new` condition token is
+     ambiguous when both flanks are alphabetical (e.g. `new york yankees`).
+  3. Bare-integer collision: a bare integer (no inch mark, no
+     `size`/`taille`/`sz` cue) consumed as a numeric size. Concretely:
+     ambiguous unless preceded by `size`/`taille`/`sz`/`sz.` OR followed
+     by `"`/`inch`/`in.`.
+
+The CLI prints the parsed filter set + `(y/N)` prompt when any ambiguity
+fires; `--assume-yes` / `-y` skips the prompt with the first-match
+interpretation echoed for audit.
 """
 
 from __future__ import annotations
@@ -51,6 +65,7 @@ class ParsedQuery:
 @dataclass
 class _Acc:
     text: str
+    original: str
     out: dict
     ambiguities: list[str]
 
@@ -60,7 +75,7 @@ class _Acc:
 
 
 class ParseAmbiguity(Exception):
-    """Raised by `parse_strict` when the input has unresolved ambiguity."""
+    """Raised by callers that want to treat ambiguity as fatal."""
 
     def __init__(self, ambiguities: list[str]):
         super().__init__("; ".join(ambiguities))
@@ -68,13 +83,13 @@ class ParseAmbiguity(Exception):
 
 
 def parse(query: str) -> ParsedQuery:
-    """Parse the free-form query. Returns a `ParsedQuery` even if ambiguous;
+    """Parse the free-form query. Returns a ParsedQuery even if ambiguous;
     `parsed.ambiguities` will be non-empty in that case.
     """
     if query is None:
         raise ValueError("query must not be None")
 
-    acc = _Acc(text=query, out={}, ambiguities=[])
+    acc = _Acc(text=query, original=query, out={}, ambiguities=[])
 
     _extract_price(acc)
     _extract_distance(acc)
@@ -96,134 +111,270 @@ def parse(query: str) -> ParsedQuery:
     )
 
 
-def _set_once(acc: _Acc, key: str, value, where: str) -> None:
-    if key in acc.out and acc.out[key] != value:
-        acc.ambiguities.append(
-            f"multiple {key} values detected ({acc.out[key]!r} and {value!r}) at {where}"
-        )
-        return
-    acc.out[key] = value
+# ---------------------------------------------------------------------------
+# Price
+# ---------------------------------------------------------------------------
 
 
 def _extract_price(acc: _Acc) -> None:
-    for pat, lo_key, hi_key in (
-        (tokens.PRICE_DOLLAR_RANGE, "lo", "hi"),
-        (tokens.PRICE_RANGE_DOLLAR_SUFFIX, "lo", "hi"),
-        (tokens.PRICE_BETWEEN, "lo", "hi"),
+    matches: list[tuple[int, dict]] = []
+    for pat, kind in (
+        (tokens.PRICE_DOLLAR_RANGE, "range"),
+        (tokens.PRICE_RANGE_DOLLAR_SUFFIX, "range"),
+        (tokens.PRICE_BETWEEN, "range"),
+        (tokens.PRICE_UNDER, "under"),
+        (tokens.PRICE_OVER, "over"),
     ):
-        m = pat.search(acc.text)
-        if m:
-            _set_once(acc, "price_min", float(m.group(lo_key)), "price-range")
-            _set_once(acc, "price_max", float(m.group(hi_key)), "price-range")
-            acc.consume(m.span())
-            return
-    m = tokens.PRICE_UNDER.search(acc.text)
-    if m:
-        _set_once(acc, "price_min", 0.0, "price-under")
-        _set_once(acc, "price_max", float(m.group("hi")), "price-under")
-        acc.consume(m.span())
+        for m in pat.finditer(acc.text):
+            matches.append((m.start(), {"pat": pat, "match": m, "kind": kind}))
+    if not matches:
         return
-    m = tokens.PRICE_OVER.search(acc.text)
-    if m:
-        _set_once(acc, "price_min", float(m.group("lo")), "price-over")
-        acc.consume(m.span())
-        return
+    matches.sort(key=lambda x: x[0])
+    first = matches[0][1]
+    m = first["match"]
+    if first["kind"] == "range":
+        acc.out["price_min"] = float(m.group("lo"))
+        acc.out["price_max"] = float(m.group("hi"))
+    elif first["kind"] == "under":
+        acc.out["price_min"] = 0.0
+        acc.out["price_max"] = float(m.group("hi"))
+    elif first["kind"] == "over":
+        acc.out["price_min"] = float(m.group("lo"))
+    acc.consume(m.span())
+    if len(matches) > 1:
+        acc.ambiguities.append(
+            "multiple price tokens detected; using first-by-position"
+        )
+        # Consume the rest so they don't leak into keywords.
+        for _, extra in matches[1:]:
+            acc.consume(extra["match"].span())
+
+
+# ---------------------------------------------------------------------------
+# Distance
+# ---------------------------------------------------------------------------
 
 
 def _extract_distance(acc: _Acc) -> None:
+    matches: list[tuple[int, "re.Match"]] = []
     for pat in (tokens.DISTANCE_WITHIN, tokens.DISTANCE_PLAIN):
-        m = pat.search(acc.text)
-        if m:
-            _set_once(acc, "distance_km", float(m.group("km")), "distance")
+        for m in pat.finditer(acc.text):
+            matches.append((m.start(), m))
+    if not matches:
+        return
+    matches.sort(key=lambda x: x[0])
+    first = matches[0][1]
+    acc.out["distance_km"] = float(first.group("km"))
+    acc.consume(first.span())
+    if len(matches) > 1:
+        acc.ambiguities.append(
+            "multiple distance tokens detected; using first-by-position"
+        )
+        for _, m in matches[1:]:
             acc.consume(m.span())
-            # Loop again in case there's a second occurrence — same value is fine,
-            # different value flags ambiguity (`_set_once` records that).
-            second = pat.search(acc.text)
-            if second:
-                _set_once(acc, "distance_km", float(second.group("km")), "distance-2")
-                acc.consume(second.span())
-            return
+
+
+# ---------------------------------------------------------------------------
+# Recency
+# ---------------------------------------------------------------------------
 
 
 def _extract_recency(acc: _Acc) -> None:
+    """Recency precedence per spec §3:
+       past Nh > today > listed-in/last-N (windowed)
+    Duplicate windowed tokens flag ambiguity but use first-by-position.
+    """
     m = tokens.RECENCY_PAST_HOURS.search(acc.text)
     if m:
         h = int(m.group("h"))
-        _set_once(acc, "recency_days", 1 if h <= 24 else (h + 23) // 24, "recency-hours")
+        acc.out["recency_days"] = 1 if h <= 24 else (h + 23) // 24
         acc.consume(m.span())
         return
     m = tokens.RECENCY_TODAY.search(acc.text)
     if m:
-        _set_once(acc, "recency_days", 0, "recency-today")
+        acc.out["recency_days"] = 0
         acc.consume(m.span())
         return
+    matches: list[tuple[int, "re.Match"]] = []
     for pat in (tokens.RECENCY_LISTED_IN, tokens.RECENCY_LAST_N):
-        m = pat.search(acc.text)
-        if m:
-            n = int(m.group("n"))
-            unit = m.group("unit")
-            _set_once(acc, "recency_days", tokens.days_from_unit(n, unit), "recency-window")
+        for m in pat.finditer(acc.text):
+            matches.append((m.start(), m))
+    if not matches:
+        return
+    matches.sort(key=lambda x: x[0])
+    first = matches[0][1]
+    n = int(first.group("n"))
+    unit = first.group("unit")
+    acc.out["recency_days"] = tokens.days_from_unit(n, unit)
+    acc.consume(first.span())
+    if len(matches) > 1:
+        acc.ambiguities.append(
+            "multiple recency tokens detected; using first-by-position"
+        )
+        for _, m in matches[1:]:
             acc.consume(m.span())
-            return
+
+
+# ---------------------------------------------------------------------------
+# Condition
+# ---------------------------------------------------------------------------
+
+_CONDITION_CUE_RE = re.compile(
+    r'\b(?:condition|état|etat)\s*[:=-]?\s*$', re.IGNORECASE
+)
 
 
 def _extract_condition(acc: _Acc) -> None:
-    # `like new` first.
+    """Look for `like new` first (longest), then `new` / `used` / `good` / `fair`.
+
+    Token-class collision (spec §8.2 trigger 2): the bare token `new`
+    flanked on both sides by alphabetical words (e.g. `new york yankees`)
+    is flagged ambiguous unless preceded by a condition cue
+    (`condition:`, `état`, etc.) or by `like` (handled separately).
+    """
     m = tokens.CONDITION_LIKE_NEW.search(acc.text)
     if m:
-        _set_once(acc, "condition", "used-like-new", "condition-like-new")
+        acc.out["condition"] = "used-like-new"
         acc.consume(m.span())
         return
-    for pat, value in (
-        (tokens.CONDITION_NEW, "new"),
-        (tokens.CONDITION_USED_GOOD, "used-good"),
-        (tokens.CONDITION_USED_FAIR, "used-fair"),
-        (tokens.CONDITION_USED, "used-good"),
+
+    # Try each remaining condition pattern in priority order.
+    for pat, value, name in (
+        (tokens.CONDITION_NEW, "new", "new"),
+        (tokens.CONDITION_USED_GOOD, "used-good", "good"),
+        (tokens.CONDITION_USED_FAIR, "used-fair", "fair"),
+        (tokens.CONDITION_USED, "used-good", "used"),
     ):
         m = pat.search(acc.text)
-        if m:
-            _set_once(acc, "condition", value, f"condition-{value}")
-            acc.consume(m.span())
-            return
+        if not m:
+            continue
+        if name == "new" and _is_keyword_adjacent(
+            acc.text, m.span(), cue_word="condition"
+        ):
+            acc.ambiguities.append(
+                f"token 'new' is adjacent to alphabetical context; "
+                f"could be a keyword (e.g. 'new york'). Parsed as condition."
+            )
+        acc.out["condition"] = value
+        acc.consume(m.span())
+        return
+
+
+# ---------------------------------------------------------------------------
+# Size
+# ---------------------------------------------------------------------------
+
+# Cues immediately before a bare digit make it unambiguous as a size.
+_BARE_DIGIT_CUE_BEFORE = re.compile(r'(?:\bsize|\btaille|\bsz\.?)\s*[:=]?\s*$', re.IGNORECASE)
+# Cues immediately after a bare digit (before-strip) — handled separately
+# via the SIZE_NUMERIC_INCH pattern, which already consumes `"`/`inch`/`in.`.
+
+# Cues that disambiguate a bare alpha size.
+_ALPHA_CUE_BEFORE = re.compile(
+    r'(?:\bsize|\btaille|\bsz\.?)\s*[:=]?\s*$', re.IGNORECASE
+)
+_ALPHA_LEFT_PUNCT = re.compile(r'[:,]\s*$')
+_ALPHA_RIGHT_PUNCT = re.compile(r'^\s*[:,/]')
 
 
 def _extract_size(acc: _Acc) -> None:
-    # 1. Numeric+inch first (consumes the `"` / `inch` along with the digits).
+    """Three-tier size extraction.
+
+    1. Numeric+inch (`11"`, `11 inch`) — never ambiguous; the inch suffix is
+       the disambiguator.
+    2. Alpha (XS/S/M/L/XL/XXL) — ambiguous if the alpha is a single letter
+       (S/M/L) flanked on both sides by alphabetical words AND not preceded
+       by a size cue.
+    3. Bare numeric — ambiguous unless preceded by `size`/`taille`/`sz`.
+    """
+    # Tier 1
     m = tokens.SIZE_NUMERIC_INCH.search(acc.text)
     if m:
-        _set_once(acc, "size", m.group("size"), "size-numeric-inch")
+        acc.out["size"] = m.group("size")
         acc.consume(m.span())
-        # Don't return — also consume any second numeric size-shaped token as
-        # ambiguity, since user typed two sizes.
         m2 = tokens.SIZE_NUMERIC_INCH.search(acc.text) or tokens.SIZE_NUMERIC_BARE.search(acc.text)
         if m2:
             acc.ambiguities.append(
                 f"multiple numeric size tokens ({acc.out['size']!r} and {m2.group('size')!r})"
             )
             acc.consume(m2.span())
-        # Alpha shouldn't also be set when a numeric size already won.
         return
 
-    # 2. Alpha BEFORE bare numeric: prevents stealing a `size 11" set` keyword digit
-    #    when the user really meant the alpha. (§7.4 ambiguity: bare digits trigger
-    #    a prompt, alpha sizes are unambiguous when they appear standalone.)
+    # Tier 2
     m = tokens.SIZE_ALPHA.search(acc.text)
     if m:
-        _set_once(acc, "size", m.group("size").upper(), "size-alpha")
+        size = m.group("size").upper()
+        if len(size) == 1 and _is_alpha_flanked(acc.text, m.span(), allow_cues=("size", "taille", "sz")):
+            acc.ambiguities.append(
+                f"single-letter size {size!r} flanked by alphabetical context; "
+                f"could be a keyword (e.g. an initial). Parsed as size."
+            )
+        acc.out["size"] = size
         acc.consume(m.span())
         return
 
-    # 3. Bare numeric. This is the ambiguous case: the digit could be a keyword.
-    #    Per §7.4, we DO consume it (so the search behaves as the user almost
-    #    always intends), but flag ambiguity so the CLI can prompt.
+    # Tier 3
     m = tokens.SIZE_NUMERIC_BARE.search(acc.text)
     if m:
         size = m.group("size")
-        _set_once(acc, "size", size, "size-numeric-bare")
+        # Cue check: text immediately before the match.
+        prefix = acc.text[: m.start()]
+        if not _BARE_DIGIT_CUE_BEFORE.search(prefix):
+            acc.ambiguities.append(
+                f"bare integer {size!r} parsed as size; could be a quantity, "
+                f"year, or model number (no 'size'/'taille'/'sz' cue, no '\"' suffix)"
+            )
+        acc.out["size"] = size
         acc.consume(m.span())
-        acc.ambiguities.append(
-            f"bare digit {size!r} parsed as size — could also be a keyword"
-        )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_alpha_flanked(text: str, span: tuple[int, int], *, allow_cues: tuple[str, ...]) -> bool:
+    """True iff the token at `span` is bounded on BOTH sides by an
+    alphabetical word AND not preceded by any of the allow-listed cues
+    (`size`, `taille`, `sz`, etc.). String boundaries and common
+    punctuation (`:`/`,`/`/`) count as non-alpha. Used for size tokens
+    where standalone-at-edge usage is normal.
+    """
+    a, b = span
+    left = text[:a]
+    right = text[b:]
+
+    cue_re = re.compile(
+        r'\b(?:' + r'|'.join(re.escape(c) for c in allow_cues) + r')\.?\s*[:=]?\s*$',
+        re.IGNORECASE,
+    )
+    if cue_re.search(left):
+        return False
+
+    left_alpha = bool(re.search(r'[A-Za-z]\s*$', left))
+    right_alpha = bool(re.search(r'^\s*[A-Za-z]', right))
+    return left_alpha and right_alpha
+
+
+def _is_keyword_adjacent(text: str, span: tuple[int, int], *, cue_word: str) -> bool:
+    """True iff the token at `span` has an alphabetical word on EITHER side
+    AND is not preceded by `cue_word`. Used for the `new` condition where
+    `new york yankees` (alpha-right at start of string) is the canonical
+    ambiguity.
+    """
+    a, b = span
+    left = text[:a]
+    right = text[b:]
+
+    cue_re = re.compile(
+        r'\b' + re.escape(cue_word) + r'\.?\s*[:=]?\s*$', re.IGNORECASE
+    )
+    if cue_re.search(left):
+        return False
+
+    left_alpha = bool(re.search(r'[A-Za-z]\s*$', left))
+    right_alpha = bool(re.search(r'^\s*[A-Za-z]', right))
+    return left_alpha or right_alpha
 
 
 _SEP_RE = re.compile(r'[,;]+')

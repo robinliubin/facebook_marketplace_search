@@ -95,7 +95,7 @@ def test_at_3_5_failed_validation_recorded(db):
     record_search_results(
         db,
         search_id=sid,
-        rows=[("1", 0, False, [ValidationFailure(filter="size", reason="size_token_11_not_in_text")])],
+        rows=[("1", 0, False, [ValidationFailure(filter="size", reason="size_token_11_not_in_text")], 80.0, "CAD")],
     )
     db.commit()
     cur = db.execute(

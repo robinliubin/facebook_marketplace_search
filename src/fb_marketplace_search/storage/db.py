@@ -198,22 +198,37 @@ def record_search_results(
     conn: sqlite3.Connection,
     *,
     search_id: int,
-    rows: Iterable[tuple[str, int, bool, list[ValidationFailure]]],
+    rows: Iterable[tuple[str, int, bool, list[ValidationFailure], Optional[float], Optional[str]]],
 ) -> int:
-    """rows: iterable of (listing_id, position, validated_pass, failures_list).
+    """rows: iterable of (listing_id, position, validated_pass, failures_list,
+    price_at_search, currency_at_search).
 
-    Returns the count of rows dropped as within-run duplicates (same
-    listing_id seen at multiple positions in one search). Per architecture
-    §7.6: ON CONFLICT IGNORE retains the earliest-seen position.
+    Returns the count of rows dropped as within-run duplicates. Per
+    architecture §7.6: ON CONFLICT IGNORE retains the earliest-seen position.
+
+    `price_at_search`/`currency_at_search` snapshot the listing's price at
+    the moment this search ran. listings.price gets overwritten on every
+    UPSERT, so without these per-search columns the diff loses the price
+    history needed for the PRICE_CHANGED bucket (bug #6 / AT-5.2).
     """
     payload = []
-    for listing_id, position, passed, failures in rows:
+    for listing_id, position, passed, failures, price_at, currency_at in rows:
         failures_json = (
             json.dumps([f.as_dict() for f in failures], separators=(",", ":"))
             if failures
             else None
         )
-        payload.append((search_id, listing_id, position, 1 if passed else 0, failures_json))
+        payload.append(
+            (
+                search_id,
+                listing_id,
+                position,
+                1 if passed else 0,
+                failures_json,
+                price_at,
+                currency_at,
+            )
+        )
     if not payload:
         return 0
     before = conn.execute(
@@ -222,8 +237,9 @@ def record_search_results(
     conn.executemany(
         """
         INSERT OR IGNORE INTO search_results (
-            search_id, listing_id, position, validated_pass, validation_failures_json
-        ) VALUES (?, ?, ?, ?, ?)
+            search_id, listing_id, position, validated_pass, validation_failures_json,
+            price_at_search, currency_at_search
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         payload,
     )

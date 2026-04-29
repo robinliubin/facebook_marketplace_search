@@ -31,11 +31,13 @@ def test_normalize_missing_id_raises():
     "raw,expected_delta",
     [
         ("just listed", timedelta(0)),
+        ("today", timedelta(0)),
         ("3 hours ago", timedelta(hours=3)),
         ("2 days ago", timedelta(days=2)),
         ("a week ago", timedelta(days=7)),
         ("1 week ago", timedelta(weeks=1)),
-        ("yesterday", timedelta(days=1)),
+        ("last week", timedelta(days=7)),
+        ("2 weeks ago", timedelta(weeks=2)),
     ],
 )
 def test_parse_listed_at(raw, expected_delta):
@@ -48,3 +50,7 @@ def test_parse_listed_at_none():
     assert parse_listed_at(None) is None
     assert parse_listed_at("") is None
     assert parse_listed_at("nonsense") is None
+    # Spec §8.2: month-grain strings are NOT on the allow-list.
+    assert parse_listed_at("2 months ago") is None
+    # Spec §8.2: bare 'yesterday' is NOT on the allow-list.
+    assert parse_listed_at("yesterday") is None

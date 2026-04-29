@@ -143,23 +143,26 @@ def test_at_1_9_comma_less():
 
 
 def test_at_1_10_filter_shaped_but_no_match():
-    """`7-11 set` is a brand/range string — neither a price (no $) nor a
-    distance. Should land in keywords untouched.
+    """`7-11 set` — bare digit token, no `size`/`taille`/`sz` cue, no inch
+    suffix. Per spec §8.2 trigger 3, this is ambiguous: the parser
+    consumes the digit as a size (first match) but flags it.
     """
-    # NB: parser will detect bare digits as size; that is *expected* and §7.4
-    # default flags it as ambiguity for the CLI to confirm. Verify ambiguity
-    # is flagged so the CLI prompts.
     p = parse("7-11 set")
-    # We expect a size to be set (parser is consume-when-in-doubt) but we
-    # ALSO expect ambiguity to be flagged.
     assert p.size in ("7", "11")
-    assert any("bare digit" in a for a in p.ambiguities)
+    assert any("bare integer" in a for a in p.ambiguities)
 
 
-def test_at_1_11_ambiguous_bare_digit_flagged():
+def test_at_1_11d_bare_integer_no_cue_flagged():
+    """AT-1.11d: `iphone 11 mint condition` — bare 11, no cue, ambiguous."""
+    p = parse("iphone 11 mint condition")
+    assert p.size == "11"
+    assert any("bare integer" in a for a in p.ambiguities)
+
+
+def test_lone_bare_digit_flagged():
     p = parse("11")
     assert p.size == "11"
-    assert any("bare digit" in a for a in p.ambiguities)
+    assert any("bare integer" in a for a in p.ambiguities)
 
 
 def test_keywords_only_no_filters():

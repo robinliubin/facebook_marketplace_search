@@ -86,15 +86,18 @@ def compute_diff(
 def passed_pairs_for_search(
     conn: sqlite3.Connection, *, search_id: int
 ) -> list[tuple[str, Optional[float]]]:
-    """(listing_id, price) for every validated_pass=1 row in a search."""
+    """(listing_id, price_at_search) for every validated_pass=1 row in a search.
+
+    Reads the per-search price snapshot from search_results, NOT the latest
+    listings.price (which UPSERT overwrites). See bug #6 / AT-5.2.
+    """
     cur = conn.execute(
         """
-        SELECT sr.listing_id, l.price
-          FROM search_results sr
-          JOIN listings l ON l.marketplace_id = sr.listing_id
-         WHERE sr.search_id = ? AND sr.validated_pass = 1
-         ORDER BY sr.listing_id
+        SELECT listing_id, price_at_search
+          FROM search_results
+         WHERE search_id = ? AND validated_pass = 1
+         ORDER BY listing_id
         """,
         (search_id,),
     )
-    return [(row["listing_id"], row["price"]) for row in cur.fetchall()]
+    return [(row["listing_id"], row["price_at_search"]) for row in cur.fetchall()]

@@ -54,8 +54,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     search_p.add_argument("--show-rejects", action="store_true")
     search_p.add_argument("--only-new", action="store_true")
     search_p.add_argument("--debug", action="store_true", help="headful + dump raw")
-    search_p.add_argument("--assume-yes", action="store_true",
-                          help="don't prompt on ambiguous parse")
+    search_p.add_argument("--assume-yes", "-y", action="store_true",
+                          help="don't prompt on ambiguous parse; echo the chosen interpretation to stdout for audit")
     search_p.add_argument("--min-interval", type=int, default=None,
                           help="override re-run minimum interval in seconds (default 300)")
     search_p.add_argument("--force", action="store_true",
@@ -141,20 +141,27 @@ def cmd_search(args) -> int:
 
     # 2. Parse.
     parsed = parse(query_text)
-    if parsed.ambiguities and not args.assume_yes:
-        print("Parsed filter set (with ambiguities):", file=sys.stderr)
-        print(_dump_parsed(parsed), file=sys.stderr)
-        if sys.stdin.isatty():
-            ans = input("Proceed? (y/N): ").strip().lower()
-            if ans != "y":
-                print("aborted by user", file=sys.stderr)
-                return 5
+    if parsed.ambiguities:
+        if args.assume_yes:
+            # Audit-echo the chosen interpretation to stdout per spec §8.2
+            # escape hatch — the user passed -y, so we proceed silently
+            # but leave a record.
+            print("ambiguous parse; --assume-yes accepted first-match interpretation:")
+            print(_dump_parsed(parsed))
         else:
-            print(
-                "non-tty + ambiguous parse; refusing without --assume-yes",
-                file=sys.stderr,
-            )
-            return 5
+            print("Parsed filter set (with ambiguities):", file=sys.stderr)
+            print(_dump_parsed(parsed), file=sys.stderr)
+            if sys.stdin.isatty():
+                ans = input("Proceed? (y/N): ").strip().lower()
+                if ans != "y":
+                    print("aborted by user", file=sys.stderr)
+                    return 5
+            else:
+                print(
+                    "non-tty + ambiguous parse; refusing without --assume-yes",
+                    file=sys.stderr,
+                )
+                return 5
 
     # 3. Storage.
     settings = make_settings(
@@ -220,7 +227,14 @@ def cmd_search(args) -> int:
             if ok:
                 passed_count += 1
             result_rows.append(
-                (listing.marketplace_id, listing.position, ok, failures)
+                (
+                    listing.marketplace_id,
+                    listing.position,
+                    ok,
+                    failures,
+                    listing.price,
+                    listing.currency,
+                )
             )
 
         search_id = record_search(

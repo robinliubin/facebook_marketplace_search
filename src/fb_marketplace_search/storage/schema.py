@@ -6,7 +6,7 @@ Bump SCHEMA_VERSION on any DDL change. The runtime checks the
 to run unless `FB_MARKETPLACE_DROP_ON_MIGRATE=1` is set.
 """
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 DDL_STATEMENTS: tuple[str, ...] = (
@@ -69,6 +69,8 @@ DDL_STATEMENTS: tuple[str, ...] = (
         position                  INTEGER NOT NULL,
         validated_pass            INTEGER NOT NULL,
         validation_failures_json  TEXT,
+        price_at_search           REAL,                       -- per-search price snapshot for diff (v2)
+        currency_at_search        TEXT,                       -- per-search currency snapshot (v2)
         PRIMARY KEY (search_id, listing_id)
     )
     """,

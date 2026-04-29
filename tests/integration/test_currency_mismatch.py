@@ -61,7 +61,9 @@ def test_price_10_currency_mismatch_persists_correct_failure_reason(tmp_path: Pa
     record_search_results(
         conn,
         search_id=sid,
-        rows=[(listing.marketplace_id, listing.position, ok, failures)],
+        rows=[
+            (listing.marketplace_id, listing.position, ok, failures, listing.price, listing.currency)
+        ],
     )
     conn.commit()
 

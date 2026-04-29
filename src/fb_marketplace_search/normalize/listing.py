@@ -43,22 +43,30 @@ class NormalizedListing:
         return "\n".join(parts)
 
 
+# Spec §8.2 mapping. Anything NOT matched by these patterns -> None
+# (validator then fails with `no_listed_at` per spec §3).
 _REL_RE = re.compile(
-    r'(?P<n>\d+)\s+(?P<unit>minute|minutes|hour|hours|day|days|week|weeks|month|months)\s+ago',
+    r'(?P<n>\d+)\s+(?P<unit>minute|minutes|hour|hours|day|days|week|weeks)\s+ago',
     re.IGNORECASE,
 )
-_JUST_LISTED = re.compile(r'\b(?:just\s+listed|moments?\s+ago)\b', re.IGNORECASE)
-_WEEK_AGO_LITERAL = re.compile(r'\ba\s+week\s+ago\b', re.IGNORECASE)
-_DAY_AGO_LITERAL = re.compile(r'\b(?:a|yester)day\s+ago\b|\byesterday\b', re.IGNORECASE)
-_HOUR_AGO_LITERAL = re.compile(r'\ban?\s+hour\s+ago\b', re.IGNORECASE)
+_JUST_LISTED = re.compile(r'\b(?:just\s+listed|moments?\s+ago|today)\b', re.IGNORECASE)
+# "a week ago" and "last week" both map to 7d. "1 week ago" is handled by _REL_RE.
+_ONE_WEEK_LITERAL = re.compile(r'\b(?:a\s+week\s+ago|last\s+week)\b', re.IGNORECASE)
 
 
 def parse_listed_at(raw: Optional[str], now: Optional[datetime] = None) -> Optional[datetime]:
     """Convert a Marketplace 'X ago' string to an absolute UTC timestamp.
 
-    Per architect §7.2 (RECENT-8 ruling per QA test plan §10): "a week ago"
-    rounds to exactly 7 days. Lenient interpretation = matches user mental model.
-    Returns None for unparseable / missing input.
+    Mapping per spec §8.2 (resolves QA RECENT-8):
+      - just listed / moments ago / today           -> now (0 days)
+      - X minutes ago / X hours ago                 -> sub-day timestamp
+      - X days ago                                  -> now - X days (literal)
+      - a week ago / 1 week ago / last week         -> now - 7 days (lenient)
+      - n weeks ago                                 -> now - n*7 days
+      - anything else                               -> None (validator fails `no_listed_at`)
+
+    Month-grain strings, ISO 8601, and bare `yesterday` are intentionally NOT
+    on the allow-list per spec §8.2.
     """
     if not raw:
         return None
@@ -66,11 +74,7 @@ def parse_listed_at(raw: Optional[str], now: Optional[datetime] = None) -> Optio
     ref = now or datetime.now(timezone.utc)
     if _JUST_LISTED.search(s):
         return ref
-    if _HOUR_AGO_LITERAL.search(s):
-        return ref - timedelta(hours=1)
-    if _DAY_AGO_LITERAL.search(s):
-        return ref - timedelta(days=1)
-    if _WEEK_AGO_LITERAL.search(s):
+    if _ONE_WEEK_LITERAL.search(s):
         return ref - timedelta(days=7)
     m = _REL_RE.search(s)
     if m:
@@ -84,13 +88,7 @@ def parse_listed_at(raw: Optional[str], now: Optional[datetime] = None) -> Optio
             return ref - timedelta(days=n)
         if unit.startswith("week"):
             return ref - timedelta(weeks=n)
-        if unit.startswith("month"):
-            return ref - timedelta(days=30 * n)
-    # ISO 8601 last resort.
-    try:
-        return datetime.fromisoformat(s)
-    except ValueError:
-        return None
+    return None
 
 
 def _to_float(v) -> Optional[float]:
