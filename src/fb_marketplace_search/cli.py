@@ -56,6 +56,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     search_p.add_argument("--debug", action="store_true", help="headful + dump raw")
     search_p.add_argument("--assume-yes", action="store_true",
                           help="don't prompt on ambiguous parse")
+    search_p.add_argument("--min-interval", type=int, default=None,
+                          help="override re-run minimum interval in seconds (default 300)")
+    search_p.add_argument("--force", action="store_true",
+                          help="bypass the re-run minimum interval check")
 
     sub.add_parser("setup", help="one-time interactive login (headful)")
     sub.add_parser("init-db", help="ensure DB + schema (idempotent)")
@@ -165,19 +169,23 @@ def cmd_search(args) -> int:
             print(str(exc), file=sys.stderr)
             return 3
 
-        # 4. Re-run politeness check (Layer 4 / RATE-1).
+        # 4. Re-run politeness check (architecture §7.7 / Layer 4 / RATE-1).
         filters_json = canonical_filters_json(parsed)
         fhash = filters_hash(filters_json)
+        min_interval = (
+            args.min_interval
+            if args.min_interval is not None
+            else settings.min_interval_seconds
+        )
         prior = most_recent_search_with_filters_hash(conn, filters_hash_value=fhash)
-        if prior is not None:
+        if prior is not None and not args.force:
             prior_run_at = datetime.fromisoformat(prior["run_at"])
             now = datetime.now(timezone.utc)
-            delta = (now - prior_run_at).total_seconds()
-            if delta < settings.min_interval_seconds:
+            delta = int((now - prior_run_at).total_seconds())
+            if delta < min_interval:
                 print(
-                    f"refusing: same query was run {int(delta)}s ago "
-                    f"(< {settings.min_interval_seconds}s min interval). "
-                    f"Re-run later.",
+                    f"Last run was {delta} seconds ago; minimum interval is "
+                    f"{min_interval}. Use --force to override.",
                     file=sys.stderr,
                 )
                 return 6
@@ -223,7 +231,12 @@ def cmd_search(args) -> int:
             total_returned=len(listings),
             total_passed=passed_count,
         )
-        record_search_results(conn, search_id=search_id, rows=result_rows)
+        dropped = record_search_results(conn, search_id=search_id, rows=result_rows)
+        if dropped:
+            print(
+                f"dedup: dropped {dropped} within-run duplicate listing(s)",
+                file=sys.stderr,
+            )
         conn.commit()
 
         # 7. Output.

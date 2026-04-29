@@ -199,8 +199,13 @@ def record_search_results(
     *,
     search_id: int,
     rows: Iterable[tuple[str, int, bool, list[ValidationFailure]]],
-) -> None:
-    """rows: iterable of (listing_id, position, validated_pass, failures_list)."""
+) -> int:
+    """rows: iterable of (listing_id, position, validated_pass, failures_list).
+
+    Returns the count of rows dropped as within-run duplicates (same
+    listing_id seen at multiple positions in one search). Per architecture
+    §7.6: ON CONFLICT IGNORE retains the earliest-seen position.
+    """
     payload = []
     for listing_id, position, passed, failures in rows:
         failures_json = (
@@ -209,14 +214,24 @@ def record_search_results(
             else None
         )
         payload.append((search_id, listing_id, position, 1 if passed else 0, failures_json))
+    if not payload:
+        return 0
+    before = conn.execute(
+        "SELECT COUNT(*) FROM search_results WHERE search_id = ?", (search_id,)
+    ).fetchone()[0]
     conn.executemany(
         """
-        INSERT OR REPLACE INTO search_results (
+        INSERT OR IGNORE INTO search_results (
             search_id, listing_id, position, validated_pass, validation_failures_json
         ) VALUES (?, ?, ?, ?, ?)
         """,
         payload,
     )
+    after = conn.execute(
+        "SELECT COUNT(*) FROM search_results WHERE search_id = ?", (search_id,)
+    ).fetchone()[0]
+    inserted = after - before
+    return len(payload) - inserted
 
 
 def most_recent_search_with_filters_hash(

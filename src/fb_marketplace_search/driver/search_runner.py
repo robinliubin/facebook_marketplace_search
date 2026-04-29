@@ -220,13 +220,11 @@ def harvest_from_html(html: str) -> list[dict]:
     p = _CardCollector()
     p.feed(html)
     out = []
-    seen: set[str] = set()
+    # Within-run duplicates are deduped at the SQL layer per architecture §7.6
+    # (INSERT OR IGNORE on search_results retains the earliest-seen position).
+    # Do NOT pre-dedup here — the SQL layer is the single source of truth and
+    # the CLI logs the drop count from its return value.
     for c in p.cards:
-        if c.marketplace_id in seen:
-            # Within-run dedup at the card level (architect open Q DIFF-7
-            # default: one row per listing_id per search_id).
-            continue
-        seen.add(c.marketplace_id)
         out.append({
             "marketplace_id": c.marketplace_id,
             "url": c.url,
