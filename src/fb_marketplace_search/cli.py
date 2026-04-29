@@ -81,6 +81,35 @@ def main(argv: Optional[list[str]] = None) -> int:
     return 2
 
 
+def check_politeness_gate(
+    conn,
+    *,
+    filters_hash_value: str,
+    min_interval: int,
+    force: bool,
+    now=None,
+) -> Optional[str]:
+    """Architecture §7.7 RATE-1 gate. Returns the user-facing error message
+    string when the gate blocks the run, or None when the run may proceed.
+
+    `now` is injectable for deterministic testing.
+    """
+    if force:
+        return None
+    prior = most_recent_search_with_filters_hash(conn, filters_hash_value=filters_hash_value)
+    if prior is None:
+        return None
+    prior_run_at = datetime.fromisoformat(prior["run_at"])
+    ref = now or datetime.now(timezone.utc)
+    delta = int((ref - prior_run_at).total_seconds())
+    if delta < min_interval:
+        return (
+            f"Last run was {delta} seconds ago; minimum interval is "
+            f"{min_interval}. Use --force to override."
+        )
+    return None
+
+
 def cmd_init_db() -> int:
     settings = make_settings()
     ensure_home(settings)
@@ -184,18 +213,12 @@ def cmd_search(args) -> int:
             if args.min_interval is not None
             else settings.min_interval_seconds
         )
-        prior = most_recent_search_with_filters_hash(conn, filters_hash_value=fhash)
-        if prior is not None and not args.force:
-            prior_run_at = datetime.fromisoformat(prior["run_at"])
-            now = datetime.now(timezone.utc)
-            delta = int((now - prior_run_at).total_seconds())
-            if delta < min_interval:
-                print(
-                    f"Last run was {delta} seconds ago; minimum interval is "
-                    f"{min_interval}. Use --force to override.",
-                    file=sys.stderr,
-                )
-                return 6
+        gate = check_politeness_gate(
+            conn, filters_hash_value=fhash, min_interval=min_interval, force=args.force
+        )
+        if gate is not None:
+            print(gate, file=sys.stderr)
+            return 6
 
         # 5. Drive the browser.
         from .driver import open_page, run_search
