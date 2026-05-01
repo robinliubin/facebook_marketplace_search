@@ -1,0 +1,34 @@
+[project]
+name = "fb-marketplace-search"
+version = "0.1.0"
+description = "Validating CLI search over Facebook Marketplace — drops listings whose actual attributes violate user filters"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "playwright>=1.49.0",
+    "camoufox>=0.4.0",
+    "python-dateutil>=2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pexpect>=4.9.0",
+]
+
+[project.scripts]
+fbms = "fb_marketplace_search.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fb_marketplace_search"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = '-m "not smoke"'
+markers = [
+    "smoke: opt-in tests that hit real Marketplace (requires logged-in storage_state)",
+]
